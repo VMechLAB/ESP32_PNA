@@ -1,6 +1,6 @@
 /*
  * ESP32 Pocket Network Analyzer
- * Made by: VMechLAB; Vasilije Jovanovic
+ * Made by VMechLAB; Vasilije Jovanovic
  */
 
 #include <Arduino.h>
@@ -12,7 +12,6 @@
 #include <BLEScan.h>
 #include <RF24.h>
 
-//Pin Definitions
 #define OLED_SDA   21
 #define OLED_SCL   22
 #define NRF_CE     4
@@ -41,12 +40,10 @@ enum AppState {
 };
 AppState state = MENU;
 
-// Menu items
 const char* menuItems[] = { "1. Wi-Fi Scan", "2. BLE Scan", "3. NRF24 Scan", "4. About" };
 const int menuCount = 4;
 int menuIndex = 0;
 
-// Results storage
 const int MAX_WIFI = 20;
 const int MAX_BLE = 20;
 const int MAX_NRF = 20;
@@ -63,6 +60,7 @@ int nrfCount = 0;
 int resultScroll = 0;
 bool backToMenu = false;
 
+//Function Prototypes
 void readButtons();
 void displayMenu();
 void displayResults(const String results[], int count, int scroll);
@@ -70,6 +68,7 @@ void scanWiFi();
 void scanBLE();
 void scanNRF24();
 
+//Setup
 void setup() {
   Serial.begin(115200);
 
@@ -103,6 +102,7 @@ void setup() {
   Serial.println("Ready.");
 }
 
+//Main Loop
 void loop() {
   readButtons();
 
@@ -159,10 +159,9 @@ void loop() {
       break;
   }
 
-  delay(50);
+  delay(25);
 }
 
-//Button Reading (with debounce)
 void readButtons() {
   unsigned long now = millis();
   if (now - lastButtonTime < DEBOUNCE_MS) return;
@@ -172,7 +171,6 @@ void readButtons() {
   bool curSel = digitalRead(BUTTON_SEL);
   bool curBack = digitalRead(BUTTON_BACK);
 
-  // Detect falling edge (active LOW)
   btnUp = (lastBtnUp == HIGH && curUp == LOW);
   btnDown = (lastBtnDown == HIGH && curDown == LOW);
   btnSel = (lastBtnSel == HIGH && curSel == LOW);
@@ -213,7 +211,7 @@ void displayResults(const String results[], int count, int scroll) {
   u8g2.setFont(u8g2_font_6x10_tf);
 
   int lines = 0;
-  int maxLines = 5; // 64/12 ≈ 5 lines
+  int maxLines = 5;
 
   String header = "Results (" + String(count) + ")";
   u8g2.drawStr(0, 0, header.c_str());
@@ -260,7 +258,6 @@ void scanWiFi() {
     n = WiFi.scanComplete();
   }
   if (n == -1) {
-    // start new scan
     WiFi.scanNetworks(true);
     delay(3000);
     n = WiFi.scanComplete();
@@ -293,7 +290,7 @@ void scanBLE() {
   pBLEScan->setActiveScan(true);
   pBLEScan->setInterval(100);
   pBLEScan->setWindow(99);
-  BLEScanResults foundDevices = pBLEScan->start(3, false);
+  BLEScanResults foundDevices = pBLEScan->start(3, false); // 3 sec
 
   int count = foundDevices.getCount();
   bleCount = min(count, MAX_BLE);
@@ -306,7 +303,7 @@ void scanBLE() {
     bleResults[i] = name.substring(0, 10) + " " + String(rssi) + "dBm";
     // shorten address if needed
   }
-  pBLEScan->clearResults();
+  pBLEScan->clearResults(); // free memory
 }
 
 void scanNRF24() {

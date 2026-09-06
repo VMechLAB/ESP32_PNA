@@ -3,29 +3,29 @@
 ![Version](https://img.shields.io/badge/version-0.1-blue)
 ![ESP32](https://img.shields.io/badge/ESP32-WiFi%2FBLE%2BNRF24-green)
 
-A handheld diagnostic tool that scans Wi‑Fi, BLE, and 2.4 GHz RF activity using an ESP32, 0.96" OLED, and NRF24L01+ module. All controlled with four tactile buttons.
+little handheld gadget that scans wifi, bluetooth, and 2.4GHz RF junk around you. ESP32 + tiny OLED screen + NRF24 module, controlled with 4 buttons. basically a pocket wifi/bt sniffer.
 
-## Features
-- **Wi‑Fi AP scanning** – SSID, BSSID, channel, RSSI, encryption type
-- **BLE device discovery** – device name, MAC address, RSSI
-- **NRF24 channel activity** – sweeps 126 channels (0‑125) and reports active ones
-- **0.96" OLED display** (128×64, I²C) – clear menu and results
-- **Four‑button navigation** – UP, DOWN, SELECT, BACK (debounced)
-- **Battery ready** – can be powered from a 3.7 V Li‑Po (with optional charger)
-- **Compact** – fits in a 3D‑printed pocket enclosure
+## What it does
+- scans wifi APs - names, MAC, channel, signal strength, encryption
+- finds BLE devices nearby - name, MAC, signal strength
+- sweeps all 126 NRF24 channels and tells you which ones got activity
+- shows everything on a little 128x64 OLED screen
+- 4 buttons to move around (up/down/select/back)
+- can run off a 3.7V lipo battery if you want it portable
+- small enough to 3D print a case for it
 
-## Hardware
-| Component            | Model / Spec                       |
+## What you need
+| Part            | Spec                       |
 |----------------------|------------------------------------|
-| MCU                  | ESP32‑WROOM‑32 (DevKit V1)         |
-| Display              | 0.96" OLED SSD1306, I²C (128×64)   |
-| RF module            | NRF24L01+ (with SMA or PCB antenna)|
-| Buttons              | 4× tactile momentary (6×6 mm)      |
-| Power                | 3.7 V Li‑Po (1000 mAh) + TP4056    |
-| Optional storage     | Micro SD card (SPI) – for future   |
+| Brain              | ESP32-WROOM-32 (DevKit V1)         |
+| Screen              | 0.96" OLED SSD1306, I2C (128x64)   |
+| RF module         | NRF24L01+ (get one with an antenna) |
+| Buttons              | 4x tactile buttons (6x6mm)      |
+| Battery                | 3.7V lipo (1000mAh) + TP4056 charger |
+| SD card (optional)     | not used yet, wired up for later    |
 
-## Pinout (ESP32 → Peripherals)
-| Peripheral | ESP32 Pin |
+## Wiring
+| Part | ESP32 Pin |
 |------------|-----------|
 | OLED SDA   | GPIO21    |
 | OLED SCL   | GPIO22    |
@@ -38,28 +38,26 @@ A handheld diagnostic tool that scans Wi‑Fi, BLE, and 2.4 GHz RF activity usin
 | Button DOWN| GPIO35    |
 | Button SEL | GPIO32    |
 | Button BACK| GPIO33    |
-| (SD CS)    | (GPIO15)* |
+| SD CS (unused rn) | GPIO15 |
 
-> *SD card is not used in the current firmware, but pin is reserved.
+## How to use it
+1. turn it on
+2. up/down to move through menu
+3. hit select to start scanning
+4. scroll through the results
+5. back or select to go back to the menu
 
-## How to Use
-1. Power on the device.
-2. Use **UP/DOWN** to navigate the menu.
-3. Press **SELECT** to start a scan.
-4. Scroll through results with **UP/DOWN**.
-5. Press **BACK** or **SELECT** to return to the main menu.
+## Setup
+- get Arduino IDE or PlatformIO
+- install the U8g2 and RF24 libraries (BLE is already built in)
+- open `analyzer.ino`, pick "ESP32 Dev Module" as your board
+- plug it in and upload
 
-## Building the Firmware
-- Install [Arduino IDE](https://www.arduino.cc/) or PlatformIO.
-- Install libraries: `U8g2`, `RF24`, and `BLE` (built‑in).
-- Open `analyzer.ino`, set your board to "ESP32 Dev Module".
-- Upload via USB.
-
-## Future Upgrades
-- SD‑card logging to CSV
-- RSSI history graph
-- Web dashboard (ESP32 as AP)
-- 3D‑printed enclosure (STL files coming)
+## Stuff to add later
+- log scans to an SD card as CSV
+- graph showing RSSI over time
+- web dashboard, have the ESP32 host its own AP
+- STL files for a case
 
 ## License
-MIT – free to use, modify, and distribute.
+Hell no. Do what you want with this.
