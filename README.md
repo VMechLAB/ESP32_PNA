@@ -1,8 +1,5 @@
 # ESP32 Pocket Network Analyzer
 
-![Version](https://img.shields.io/badge/version-0.1-blue)
-![ESP32](https://img.shields.io/badge/ESP32-WiFi%2FBLE%2BNRF24-green)
-
 A handheld diagnostic tool that scans Wi‑Fi, BLE, and 2.4 GHz RF activity using an ESP32, 0.96" OLED, and NRF24L01+ module. All controlled with four tactile buttons.
 
 ## Features
@@ -62,4 +59,4 @@ A handheld diagnostic tool that scans Wi‑Fi, BLE, and 2.4 GHz RF activity usin
 - 3D‑printed enclosure (STL files coming)
 
 ## License
-MIT – free to use, modify, and distribute.
+No licence use it to your liking.
