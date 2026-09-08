@@ -1,10 +1,3 @@
-/*
- * ESP32 Pocket Network Analyzer - ENHANCED
- * Features: WiFi/BLE/NRF24 scanning, RSSI graph, channel analyzer,
- * signal history, filtering, deep sleep, and more!
- * No SD card support (yet)
- * Made by VMechLAB ; Vasilije
- */
 
 #include <U8g2lib.h>
 #include <WiFi.h>
@@ -12,7 +5,6 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <RF24.h>
-#include <esp_sleep.h>
 
 #define OLED_SDA   21
 #define OLED_SCL   22
@@ -24,649 +16,467 @@
 #define BUTTON_BACK 33
 #define LED_BUILTIN 2
 
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
+#define RESULT_LEN 24
 
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
 RF24 radio(NRF_CE, NRF_CSN);
 
-const unsigned long DEBOUNCE_MS = 30;
-unsigned long lastButtonTime = 0;
+// Button states (no interrupts)
 bool btnUp = false, btnDown = false, btnSel = false, btnBack = false;
-bool lastBtnUp = HIGH, lastBtnDown = HIGH, lastBtnSel = HIGH, lastBtnBack = HIGH;
+bool lastUp = HIGH, lastDown = HIGH, lastSel = HIGH, lastBack = HIGH;
+unsigned long debounceTime = 0;
+const unsigned long DEBOUNCE_MS = 20;
+
+// Hold repeat
+bool upHeld = false, downHeld = false;
+unsigned long upHoldStart = 0, downHoldStart = 0;
+const unsigned long HOLD_DELAY = 300;
+const unsigned long REPEAT_INTERVAL = 80;
 
 enum AppState { 
-  MENU, 
-  WIFI_SCANNING, WIFI_RESULTS, WIFI_DETAIL, WIFI_GRAPH,
+  MENU, WIFI_SCANNING, WIFI_RESULTS, WIFI_DETAIL, WIFI_GRAPH,
   BLE_SCANNING, BLE_RESULTS, BLE_DETAIL,
   NRF_SCANNING, NRF_RESULTS,
-  CHANNEL_ANALYZER,
-  SETTINGS,
-  ABOUT
+  CHANNEL_ANALYZER, SETTINGS, ABOUT
 };
 AppState state = MENU;
-AppState previousState = MENU;
-int menuIndex = 0;
-int subMenuIndex = 0;
-int selectedIndex = -1;  // For detail view
+int menuIndex = 0, subMenuIndex = 0, selectedIndex = -1;
+int resultScroll = 0;
 
-int scanDuration = 3;  // seconds
+int scanDuration = 3;
 bool filterStrongOnly = false;
-int sleepTimeout = 60; // seconds
-unsigned long lastActivity = 0;
 
-const int MAX_RESULTS = 15;
-const int RESULT_LEN = 32;
-const int HISTORY_LEN = 20;
+const int MAX_RESULTS = 25;
+const int HISTORY_LEN = 40;
 
 char wifiResults[MAX_RESULTS][RESULT_LEN];
-int wifiCount = 0;
-int wifiRSSI[MAX_RESULTS];
-int wifiChannel[MAX_RESULTS];
+int wifiCount = 0, wifiRSSI[MAX_RESULTS], wifiChannel[MAX_RESULTS];
 String wifiBSSID[MAX_RESULTS];
-String wifiEncryption[MAX_RESULTS];
 
 char bleResults[MAX_RESULTS][RESULT_LEN];
-int bleCount = 0;
-int bleRSSI[MAX_RESULTS];
+int bleCount = 0, bleRSSI[MAX_RESULTS];
 String bleAddress[MAX_RESULTS];
 
 char nrfResults[MAX_RESULTS][RESULT_LEN];
 int nrfCount = 0;
 
-int resultScroll = 0;
-
 int rssiHistory[HISTORY_LEN];
-int historyIndex = 0;
-int historyCount = 0;
-char historyTarget[32] = "";
+int historyIndex = 0, historyCount = 0;
+char historyTarget[24] = "";
 
-int channelUsage[14] = {0};  // Channels 1-14
+int channelUsage[14] = {0};
 int totalAPs = 0;
-
-const char menu1[] PROGMEM = "1. Wi-Fi Scan";
-const char menu2[] PROGMEM = "2. BLE Scan";
-const char menu3[] PROGMEM = "3. NRF24 Scan";
-const char menu4[] PROGMEM = "4. Channel Analyzer";
-const char menu5[] PROGMEM = "5. Settings";
-const char menu6[] PROGMEM = "6. About";
-const char* const menuItems[] PROGMEM = {menu1, menu2, menu3, menu4, menu5, menu6};
-const int menuCount = 6;
-
-const char settings1[] PROGMEM = "Scan Duration";
-const char settings2[] PROGMEM = "Filter: Strong Only";
-const char settings3[] PROGMEM = "Sleep Timeout";
-const char settings4[] PROGMEM = "Back to Menu";
-const char* const settingsItems[] PROGMEM = {settings1, settings2, settings3, settings4};
-const int settingsCount = 4;
-
-const char filterAll[] PROGMEM = "All";
-const char filterStrong[] PROGMEM = "Strong (>-60dBm)";
-const char filterWeak[] PROGMEM = "Weak (<=-60dBm)";
-
-const char strMainMenu[] PROGMEM = "== MAIN MENU ==";
-const char strArrow[] PROGMEM = ">";
-const char strAbout1[] PROGMEM = "ESP32 Analyzer v2.0";
-const char strAbout2[] PROGMEM = "WiFi/BLE/NRF24 Scanner";
-const char strAbout3[] PROGMEM = "RSSI Graph & History";
-const char strAbout4[] PROGMEM = "Channel Analyzer";
-const char strAbout5[] PROGMEM = "Press BACK to exit";
-const char strScanWiFi[] PROGMEM = "Scanning WiFi...";
-const char strScanBLE[] PROGMEM = "Scanning BLE...";
-const char strScanNRF[] PROGMEM = "Scanning NRF24...";
-const char strNoAP[] PROGMEM = "No AP found";
-const char strNoActivity[] PROGMEM = "No activity";
-const char strHidden[] PROGMEM = "<hidden>";
-const char strUnknown[] PROGMEM = "Unknown";
-const char strPressSel[] PROGMEM = "Press SEL for details";
-const char strPressBack[] PROGMEM = "Press BACK";
-const char strSignalGraph[] PROGMEM = "Signal Graph";
-const char strChannelHeat[] PROGMEM = "Channel Heatmap";
-const char strHistory[] PROGMEM = "History";
-
-char buffer[32];
+unsigned long lastActivity = 0;
 
 void readButtons();
+void drawSignalBar(int x, int y, int rssi, int maxWidth);
+void drawBorder();
+void drawProgressBar(int x, int y, int width, int percent);
+void drawScrollbar(int total, int visible, int position);
 void displayMenu();
-void displaySettings();
-void displayResults(char results[][RESULT_LEN], int count, int scroll, int rssiArr[]);
+void displayResults(char results[][RESULT_LEN], int count, int scroll, int rssiArr[], int type);
 void displayDetail(int type, int index);
 void displayGraph();
 void displayChannelAnalyzer();
-void displayHistory();
+void displaySettings();
+void showAbout();
 void scanWiFi();
 void scanBLE();
 void scanNRF24();
 void analyzeChannels();
-void showAbout();
-void goToSleep();
-void resetActivity();
-
-void setup() {
-  Serial.begin(115200);
-  Serial.println("ESP32 Pocket Analyzer v2.0");
-
-  // OLED
-  u8g2.begin();
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.setFontPosTop();
-  u8g2.setContrast(255);
-
-  // Buttons
-  pinMode(BUTTON_UP, INPUT_PULLUP);
-  pinMode(BUTTON_DOWN, INPUT_PULLUP);
-  pinMode(BUTTON_SEL, INPUT_PULLUP);
-  pinMode(BUTTON_BACK, INPUT_PULLUP);
-  
-  // LED
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
-
-  // NRF24
-  if (!radio.begin()) {
-    Serial.println("NRF24 init failed!");
-  } else {
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setDataRate(RF24_250KBPS);
-    radio.stopListening();
-  }
-
-  // BLE
-  BLEDevice::init("ESP32_Scanner");
-  
-  // WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-
-  // Init history
-  for (int i = 0; i < HISTORY_LEN; i++) rssiHistory[i] = -100;
-  
-  lastActivity = millis();
-  Serial.println("Ready.");
-}
-
-void loop() {
-  readButtons();
-  resetActivity();
-
-  // Check for sleep
-  if (millis() - lastActivity > sleepTimeout * 1000 && state != MENU) {
-    goToSleep();
-  }
-
-  switch (state) {
-    case MENU:
-      displayMenu();
-      if (btnSel) {
-        switch (menuIndex) {
-          case 0: state = WIFI_SCANNING; break;
-          case 1: state = BLE_SCANNING; break;
-          case 2: state = NRF_SCANNING; break;
-          case 3: state = CHANNEL_ANALYZER; analyzeChannels(); break;
-          case 4: state = SETTINGS; break;
-          case 5: showAbout(); state = MENU; break;
-        }
-        selectedIndex = -1;
-      }
-      break;
-
-    case WIFI_SCANNING: 
-      scanWiFi(); 
-      state = WIFI_RESULTS; 
-      resultScroll = 0; 
-      selectedIndex = -1;
-      break;
-      
-    case WIFI_RESULTS:
-      displayResults(wifiResults, wifiCount, resultScroll, wifiRSSI);
-      if (btnUp && resultScroll > 0) resultScroll--;
-      if (btnDown && resultScroll < wifiCount - 1) resultScroll++;
-      if (btnSel && wifiCount > 0) {
-        selectedIndex = resultScroll;
-        state = WIFI_DETAIL;
-      }
-      if (btnBack) { state = MENU; selectedIndex = -1; }
-      break;
-      
-    case WIFI_DETAIL:
-      displayDetail(0, selectedIndex);
-      if (btnBack || btnSel) { state = WIFI_RESULTS; }
-      break;
-
-    case BLE_SCANNING: 
-      scanBLE(); 
-      state = BLE_RESULTS; 
-      resultScroll = 0;
-      selectedIndex = -1;
-      break;
-      
-    case BLE_RESULTS:
-      displayResults(bleResults, bleCount, resultScroll, bleRSSI);
-      if (btnUp && resultScroll > 0) resultScroll--;
-      if (btnDown && resultScroll < bleCount - 1) resultScroll++;
-      if (btnSel && bleCount > 0) {
-        selectedIndex = resultScroll;
-        state = BLE_DETAIL;
-      }
-      if (btnBack) { state = MENU; selectedIndex = -1; }
-      break;
-      
-    case BLE_DETAIL:
-      displayDetail(1, selectedIndex);
-      if (btnBack || btnSel) { state = BLE_RESULTS; }
-      break;
-
-    case NRF_SCANNING: 
-      scanNRF24(); 
-      state = NRF_RESULTS; 
-      resultScroll = 0;
-      break;
-      
-    case NRF_RESULTS:
-      displayResults(nrfResults, nrfCount, resultScroll, NULL);
-      if (btnUp && resultScroll > 0) resultScroll--;
-      if (btnDown && resultScroll < nrfCount - 1) resultScroll++;
-      if (btnBack || btnSel) { state = MENU; }
-      break;
-
-    case CHANNEL_ANALYZER:
-      displayChannelAnalyzer();
-      if (btnBack || btnSel) { state = MENU; }
-      break;
-
-    case SETTINGS:
-      displaySettings();
-      break;
-
-    case ABOUT:
-      showAbout();
-      break;
-  }
-  delay(30);
-}
 
 void readButtons() {
   unsigned long now = millis();
-  if (now - lastButtonTime < DEBOUNCE_MS) return;
-
+  // Read current states (pull-up, so LOW when pressed)
   bool curUp = digitalRead(BUTTON_UP);
   bool curDown = digitalRead(BUTTON_DOWN);
   bool curSel = digitalRead(BUTTON_SEL);
   bool curBack = digitalRead(BUTTON_BACK);
 
-  btnUp = (lastBtnUp == HIGH && curUp == LOW);
-  btnDown = (lastBtnDown == HIGH && curDown == LOW);
-  btnSel = (lastBtnSel == HIGH && curSel == LOW);
-  btnBack = (lastBtnBack == HIGH && curBack == LOW);
+  // Debounce: only process if stable for DEBOUNCE_MS
+  if (now - debounceTime > DEBOUNCE_MS) {
+    // Detect edges (press = transition from HIGH to LOW)
+    btnUp = (lastUp == HIGH && curUp == LOW);
+    btnDown = (lastDown == HIGH && curDown == LOW);
+    btnSel = (lastSel == HIGH && curSel == LOW);
+    btnBack = (lastBack == HIGH && curBack == LOW);
 
-  lastBtnUp = curUp; lastBtnDown = curDown; lastBtnSel = curSel; lastBtnBack = curBack;
-  if (btnUp || btnDown || btnSel || btnBack) lastButtonTime = now;
+    // Update last states
+    lastUp = curUp; lastDown = curDown; lastSel = curSel; lastBack = curBack;
+    debounceTime = now;
+  }
+
+  // Handle hold-to-repeat for Up and Down
+  if (curUp == LOW) {
+    if (!upHeld) { upHeld = true; upHoldStart = now; }
+    if (now - upHoldStart > HOLD_DELAY && (now - debounceTime > REPEAT_INTERVAL)) {
+      btnUp = true; // simulate press
+      debounceTime = now;
+    }
+  } else { upHeld = false; }
+
+  if (curDown == LOW) {
+    if (!downHeld) { downHeld = true; downHoldStart = now; }
+    if (now - downHoldStart > HOLD_DELAY && (now - debounceTime > REPEAT_INTERVAL)) {
+      btnDown = true;
+      debounceTime = now;
+    }
+  } else { downHeld = false; }
+
+  // Clear button flags after they've been processed by the main loop
+  // We'll clear them in the main loop after using them.
 }
 
-void resetActivity() {
-  if (btnUp || btnDown || btnSel || btnBack) {
-    lastActivity = millis();
+void drawSignalBar(int x, int y, int rssi, int maxWidth) {
+  int strength = map(constrain(rssi, -100, -30), -100, -30, 0, maxWidth);
+  for (int i = 0; i < maxWidth; i++) {
+    if (i < strength) u8g2.drawBox(x + i*2, y+2, 1, 6 - i*2/maxWidth);
   }
 }
 
-void goToSleep() {
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 0, "Sleeping...");
-  u8g2.drawStr(0, 14, "Press any button");
-  u8g2.drawStr(0, 28, "to wake up");
-  u8g2.sendBuffer();
-  
-  esp_light_sleep_start();
-  
+void drawBorder() {
+  u8g2.drawFrame(0, 0, 128, 64);
+}
+
+void drawProgressBar(int x, int y, int width, int percent) {
+  u8g2.drawFrame(x, y, width, 6);
+  int fill = map(constrain(percent, 0, 100), 0, 100, 0, width-2);
+  if (fill > 0) u8g2.drawBox(x+1, y+1, fill, 4);
+}
+
+void drawScrollbar(int total, int visible, int position) {
+  if (total <= visible) return;
+  int barHeight = map(visible, 0, total, 10, 50);
+  int barPos = map(position, 0, total - visible, 10, 60 - barHeight);
+  u8g2.drawFrame(126, 10, 2, 50);
+  u8g2.drawBox(126, barPos, 2, barHeight);
+}
+
+void setup() {
+  Serial.begin(115200);
   u8g2.begin();
-  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.setFont(u8g2_font_5x7_tf);
   u8g2.setFontPosTop();
+  
+  pinMode(BUTTON_UP, INPUT_PULLUP); pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  pinMode(BUTTON_SEL, INPUT_PULLUP); pinMode(BUTTON_BACK, INPUT_PULLUP);
+  pinMode(LED_BUILTIN, OUTPUT);
+  
+  digitalWrite(LED_BUILTIN, LOW);
+  
+  if (!radio.begin()) Serial.println("NRF24 fail");
+  else { radio.setPALevel(RF24_PA_LOW); radio.setDataRate(RF24_250KBPS); radio.stopListening(); }
+  
+  BLEDevice::init("ESP32_Scanner");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  
+  for (int i = 0; i < HISTORY_LEN; i++) rssiHistory[i] = -100;
   lastActivity = millis();
+}
+
+void loop() {
+  readButtons(); // update button flags
+
+  // Process state machine
+  switch (state) {
+    case MENU: displayMenu(); break;
+    case WIFI_SCANNING: scanWiFi(); state = WIFI_RESULTS; resultScroll = 0; selectedIndex = -1; break;
+    case WIFI_RESULTS: displayResults(wifiResults, wifiCount, resultScroll, wifiRSSI, 0); break;
+    case WIFI_DETAIL: displayDetail(0, selectedIndex); break;
+    case BLE_SCANNING: scanBLE(); state = BLE_RESULTS; resultScroll = 0; selectedIndex = -1; break;
+    case BLE_RESULTS: displayResults(bleResults, bleCount, resultScroll, bleRSSI, 1); break;
+    case BLE_DETAIL: displayDetail(1, selectedIndex); break;
+    case NRF_SCANNING: scanNRF24(); state = NRF_RESULTS; resultScroll = 0; break;
+    case NRF_RESULTS: displayResults(nrfResults, nrfCount, resultScroll, NULL, 2); break;
+    case CHANNEL_ANALYZER: displayChannelAnalyzer(); break;
+    case SETTINGS: displaySettings(); break;
+    case ABOUT: showAbout(); break;
+  }
+  
+  // Clear button flags after processing to avoid repeated actions
+  btnUp = false; btnDown = false; btnSel = false; btnBack = false;
+  
+  delay(5); // small delay to prevent watchdog
 }
 
 void displayMenu() {
   u8g2.clearBuffer();
-  strcpy_P(buffer, strMainMenu);
-  u8g2.drawStr(0, 0, buffer);
-  
-  // Show battery/sleep indicator
-  u8g2.drawStr(110, 0, "Zzz");
-  
-  for (int i = 0; i < menuCount; i++) {
-    int y = 14 + i * 9;
+  drawBorder();
+  const char* items[] = {"WiFi", "BLE", "NRF24", "Chan", "Set", "About"};
+  int count = 6, yStart = 8, spacing = 8;
+  for (int i = 0; i < count; i++) {
+    int y = yStart + i * spacing;
     if (i == menuIndex) {
-      strcpy_P(buffer, strArrow);
-      u8g2.drawStr(0, y, buffer);
-    }
-    const char* menuItem = (const char*)pgm_read_ptr(&menuItems[i]);
-    strcpy_P(buffer, menuItem);
-    u8g2.drawStr(10, y, buffer);
+      u8g2.drawBox(2, y-1, 124, 7);
+      u8g2.setDrawColor(0);
+      u8g2.drawStr(8, y, items[i]);
+      u8g2.setDrawColor(1);
+    } else u8g2.drawStr(8, y, items[i]);
   }
+  u8g2.setCursor(0,0); u8g2.print(">");
+  u8g2.setCursor(8,0); u8g2.print("Analyzer");
   u8g2.sendBuffer();
   
-  if (btnUp) menuIndex = (menuIndex - 1 + menuCount) % menuCount;
-  if (btnDown) menuIndex = (menuIndex + 1) % menuCount;
+  if (btnUp) { menuIndex = (menuIndex-1+count)%count; btnUp=false; }
+  if (btnDown) { menuIndex = (menuIndex+1)%count; btnDown=false; }
+  if (btnSel) {
+    btnSel=false;
+    switch(menuIndex) {
+      case 0: state = WIFI_SCANNING; break;
+      case 1: state = BLE_SCANNING; break;
+      case 2: state = NRF_SCANNING; break;
+      case 3: state = CHANNEL_ANALYZER; analyzeChannels(); break;
+      case 4: state = SETTINGS; break;
+      case 5: state = ABOUT; break;
+    }
+  }
 }
 
-void displaySettings() {
+void displayResults(char results[][RESULT_LEN], int count, int scroll, int rssiArr[], int type) {
   u8g2.clearBuffer();
-  u8g2.drawStr(0, 0, "== SETTINGS ==");
-  for (int i = 0; i < settingsCount; i++) {
-    int y = 14 + i * 12;
-    if (i == subMenuIndex) u8g2.drawStr(0, y, ">");
-    const char* item = (const char*)pgm_read_ptr(&settingsItems[i]);
-    strcpy_P(buffer, item);
-    u8g2.drawStr(10, y, buffer);
-    if (i == 0) {
-      u8g2.setCursor(110, y);
-      u8g2.print(scanDuration);
-      u8g2.print("s");
-    } else if (i == 1) {
-      u8g2.setCursor(110, y);
-      u8g2.print(filterStrongOnly ? "ON" : "OFF");
-    } else if (i == 2) {
-      u8g2.setCursor(110, y);
-      u8g2.print(sleepTimeout);
-      u8g2.print("s");
-    }
+  drawBorder();
+  char header[16]; const char* names[] = {"WiFi","BLE","NRF"};
+  snprintf(header, sizeof(header), "%s(%d)", names[type], count);
+  u8g2.drawStr(2, 0, header);
+  
+  if (count == 0) {
+    u8g2.drawStr(2, 20, "None");
+    u8g2.sendBuffer();
+    if (btnBack||btnSel) { state=MENU; btnBack=false; btnSel=false; }
+    return;
   }
-  u8g2.sendBuffer();
-  if (btnUp) subMenuIndex = (subMenuIndex - 1 + settingsCount) % settingsCount;
-  if (btnDown) subMenuIndex = (subMenuIndex + 1) % settingsCount;
-  if (btnSel) {
-    switch (subMenuIndex) {
-      case 0: // Scan duration
-        scanDuration = (scanDuration % 8) + 2; // 2-10 seconds
-        break;
-      case 1: // Filter
-        filterStrongOnly = !filterStrongOnly;
-        break;
-      case 2: // Sleep timeout
-        sleepTimeout = (sleepTimeout == 10) ? 30 : (sleepTimeout == 30) ? 60 : 120;
-        break;
-      case 3: // Back
-        state = MENU;
-        break;
-    }
-  }
-  if (btnBack) state = MENU;
-}
-void displayResults(char results[][RESULT_LEN], int count, int scroll, int rssiArr[]) {
-  u8g2.clearBuffer();
-  char header[16];
-  snprintf(header, sizeof(header), "Results (%d)", count);
-  u8g2.drawStr(0, 0, header);
-  if (count > 5) {
-    u8g2.drawStr(120, 0, (scroll < count - 5) ? "v" : " ");
-  }
-  int maxLines = 5;
-  int start = scroll;
-  int end = min(start + maxLines, count);
-  for (int i = start; i < end; i++) {
-    int y = 12 + (i - start) * 10;
-    u8g2.drawStr(0, y, results[i]);
-    if (rssiArr != NULL && i < count) {
+  
+  int maxLines = 6;
+  int start = scroll, end = min(start+maxLines, count);
+  drawScrollbar(count, maxLines, scroll);
+  
+  int yStart = 8, lineSpacing = 8;
+  for (int i=start; i<end; i++) {
+    int y = yStart + (i-start)*lineSpacing;
+    u8g2.drawStr(2, y, results[i]);
+    if (rssiArr != NULL && i<count) {
       int rssi = rssiArr[i];
-      int barLen = map(constrain(rssi, -100, -30), -100, -30, 1, 12);
-      for (int b = 0; b < barLen; b++) {
-        u8g2.drawPixel(120 + b, y + 7);
-        u8g2.drawPixel(120 + b, y + 8);
-      }
+      drawSignalBar(90, y+1, rssi, 6);
+      u8g2.setCursor(112, y); u8g2.print(rssi);
     }
   }
+  u8g2.setCursor(2, 60); u8g2.print("S>v  B<");
   u8g2.sendBuffer();
+  
+  if (btnUp && scroll>0) { resultScroll--; btnUp=false; }
+  if (btnDown && scroll<count-maxLines) { resultScroll++; btnDown=false; }
+  if (btnSel && count>0) {
+    selectedIndex = resultScroll;
+    state = (type==0) ? WIFI_DETAIL : (type==1) ? BLE_DETAIL : MENU;
+    btnSel=false;
+  }
+  if (btnBack) { state=MENU; btnBack=false; selectedIndex=-1; }
 }
 
 void displayDetail(int type, int index) {
   u8g2.clearBuffer();
-  if (type == 0 && index < wifiCount) {
-    u8g2.drawStr(0, 0, "== WiFi Detail ==");
-    char line[32];
-    snprintf(line, sizeof(line), "SSID: %s", wifiResults[index]);
-    u8g2.drawStr(0, 12, line);
-    snprintf(line, sizeof(line), "RSSI: %d dBm", wifiRSSI[index]);
-    u8g2.drawStr(0, 22, line);
-    snprintf(line, sizeof(line), "Channel: %d", wifiChannel[index]);
-    u8g2.drawStr(0, 32, line);
-    snprintf(line, sizeof(line), "BSSID: %s", wifiBSSID[index].c_str());
-    u8g2.drawStr(0, 42, line);
-    u8g2.drawStr(0, 52, "SEL:Graph  BACK:Exit");
+  drawBorder();
+  if (type==0 && index<wifiCount) {
+    u8g2.drawStr(2, 0, wifiResults[index]);
+    u8g2.setCursor(2, 10); u8g2.print("RSSI:"); u8g2.print(wifiRSSI[index]);
+    u8g2.setCursor(2, 20); u8g2.print("CH:"); u8g2.print(wifiChannel[index]);
+    u8g2.setCursor(2, 30); u8g2.print(wifiBSSID[index]);
     strcpy(historyTarget, wifiResults[index]);
-    
-  } else if (type == 1 && index < bleCount) {
-    u8g2.drawStr(0, 0, "== BLE Detail ==");
-    char line[32];
-    snprintf(line, sizeof(line), "Name: %s", bleResults[index]);
-    u8g2.drawStr(0, 12, line);
-    snprintf(line, sizeof(line), "RSSI: %d dBm", bleRSSI[index]);
-    u8g2.drawStr(0, 22, line);
-    snprintf(line, sizeof(line), "MAC: %s", bleAddress[index].c_str());
-    u8g2.drawStr(0, 32, line);
-    u8g2.drawStr(0, 52, "SEL:Graph  BACK:Exit");
+  } else if (type==1 && index<bleCount) {
+    u8g2.drawStr(2, 0, bleResults[index]);
+    u8g2.setCursor(2, 10); u8g2.print("RSSI:"); u8g2.print(bleRSSI[index]);
+    u8g2.setCursor(2, 20); u8g2.print(bleAddress[index]);
     strcpy(historyTarget, bleResults[index]);
   }
-  
+  u8g2.setCursor(2, 50); u8g2.print("S:Graph  B:Back");
   u8g2.sendBuffer();
   
-  // If SEL pressed, show graph
-  if (btnSel && (type == 0 || type == 1)) {
-    displayGraph();
-  }
+  if (btnSel) { btnSel=false; displayGraph(); }
+  if (btnBack) { btnBack=false; state = (type==0)?WIFI_RESULTS:BLE_RESULTS; }
 }
 
 void displayGraph() {
   u8g2.clearBuffer();
-  strcpy_P(buffer, strSignalGraph);
-  u8g2.drawStr(0, 0, buffer);
-  u8g2.drawStr(80, 0, historyTarget);
-  
-  for (int i = 0; i < 4; i++) {
-    int y = 12 + i * 12;
-    u8g2.drawHLine(0, y, 128);
-    u8g2.setCursor(0, y-2);
-    u8g2.print(-20 - i*20);
-    u8g2.print("dBm");
+  drawBorder();
+  u8g2.drawStr(2, 0, "History");
+  u8g2.drawStr(70,0, historyTarget);
+  for (int i=0; i<5; i++) {
+    int y = 8 + i*9;
+    u8g2.drawHLine(2, y, 124);
+    u8g2.setCursor(2, y-1); u8g2.print(-20 - i*20);
   }
-  
-  for (int i = 1; i < historyCount && i < HISTORY_LEN; i++) {
-    int x1 = (i-1) * 6 + 10;
-    int y1 = 12 + map(constrain(rssiHistory[i-1], -100, -20), -100, -20, 48, 0);
-    int x2 = i * 6 + 10;
-    int y2 = 12 + map(constrain(rssiHistory[i], -100, -20), -100, -20, 48, 0);
-    u8g2.drawLine(x1, y1, x2, y2);
+  for (int i=1; i<historyCount && i<HISTORY_LEN; i++) {
+    int x1 = (i-1)*3 + 28, y1 = 7 + map(constrain(rssiHistory[i-1],-100,-20),-100,-20,41,0);
+    int x2 = i*3 + 28, y2 = 7 + map(constrain(rssiHistory[i],-100,-20),-100,-20,41,0);
+    u8g2.drawLine(x1,y1,x2,y2);
   }
-  
-  u8g2.setCursor(0, 58);
-  u8g2.print("Press BACK");
+  u8g2.setCursor(2,60); u8g2.print("B:exit");
   u8g2.sendBuffer();
-  
-  while (!btnBack) {
-    readButtons();
-    delay(50);
-  }
+  while (!btnBack) { readButtons(); delay(10); }
+  btnBack=false;
 }
 
 void displayChannelAnalyzer() {
   u8g2.clearBuffer();
-  strcpy_P(buffer, strChannelHeat);
-  u8g2.drawStr(0, 0, buffer);
-  
-  int barWidth = 8;
-  int maxBarHeight = 40;
-  
-  for (int ch = 1; ch <= 14; ch++) {
-    int x = (ch-1) * barWidth + 4;
-    int usage = channelUsage[ch];
-    int height = map(constrain(usage, 0, 20), 0, 20, 0, maxBarHeight);
-    int y = 12 + (maxBarHeight - height);
-    
-    u8g2.drawBox(x, y, barWidth-1, height);
-    u8g2.setCursor(x, 58);
-    u8g2.print(ch);
+  drawBorder();
+  u8g2.drawStr(2,0, "Channels");
+  u8g2.setCursor(80,0); u8g2.print("AP:"); u8g2.print(totalAPs);
+  int bw=8, maxH=38, yBase=8;
+  for (int ch=0; ch<14; ch++) {
+    int x = ch*bw + 6;
+    int h = map(constrain(channelUsage[ch+1],0,20),0,20,1,maxH);
+    int y = yBase + (maxH-h);
+    u8g2.drawBox(x,y,bw-2,h);
+    u8g2.drawFrame(x,yBase,bw-2,maxH);
+    if (ch%2==0) { u8g2.setCursor(x+1, yBase+maxH+4); u8g2.print(ch+1); }
   }
-  
-  u8g2.setCursor(0, 48);
-  u8g2.print("Total APs: ");
-  u8g2.print(totalAPs);
-  
+  u8g2.setCursor(2,60); u8g2.print("2.4GHz");
   u8g2.sendBuffer();
+  if (btnBack||btnSel) { state=MENU; btnBack=false; btnSel=false; }
+}
+
+void displaySettings() {
+  u8g2.clearBuffer();
+  drawBorder();
+  const char* items[] = {"Time", "Filter", "Back"};
+  int count=3, yStart=12, spacing=12;
+  for (int i=0; i<count; i++) {
+    int y = yStart + i*spacing;
+    if (i==subMenuIndex) {
+      u8g2.drawBox(2, y-1, 124, 10);
+      u8g2.setDrawColor(0);
+      u8g2.drawStr(6, y, items[i]);
+      u8g2.setDrawColor(1);
+    } else u8g2.drawStr(6, y, items[i]);
+    if (i==0) {
+      u8g2.setCursor(90,y); u8g2.print(scanDuration); u8g2.print("s");
+      drawProgressBar(80,y+2,20, map(scanDuration,2,10,0,100));
+    }
+    if (i==1) { u8g2.setCursor(90,y); u8g2.print(filterStrongOnly?"ON":"OFF"); }
+  }
+  u8g2.sendBuffer();
+  if (btnUp) { subMenuIndex=(subMenuIndex-1+count)%count; btnUp=false; }
+  if (btnDown) { subMenuIndex=(subMenuIndex+1)%count; btnDown=false; }
+  if (btnSel) {
+    btnSel=false;
+    switch(subMenuIndex) {
+      case 0: scanDuration = (scanDuration%8)+2; break;
+      case 1: filterStrongOnly = !filterStrongOnly; break;
+      case 2: state = MENU; break;
+    }
+  }
+  if (btnBack) { state=MENU; btnBack=false; }
+}
+
+void showAbout() {
+  u8g2.clearBuffer(); drawBorder();
+  u8g2.drawStr(2,0, "Analyzer v2");
+  u8g2.drawStr(2,12, "WiFi/BLE/NRF");
+  u8g2.drawStr(2,24, "RSSI graph");
+  u8g2.drawStr(2,36, "Channel view");
+  u8g2.drawStr(2,48, "B:menu");
+  u8g2.sendBuffer();
+  if (btnBack||btnSel) { state=MENU; btnBack=false; btnSel=false; }
 }
 
 void scanWiFi() {
-  u8g2.clearBuffer();
-  strcpy_P(buffer, strScanWiFi);
-  u8g2.drawStr(0, 0, buffer);
-  u8g2.drawStr(0, 14, "Duration: ");
-  u8g2.print(scanDuration);
-  u8g2.print("s");
-  u8g2.sendBuffer();
-
-  wifiCount = 0;
-  totalAPs = 0;
-  for (int i = 0; i < 14; i++) channelUsage[i] = 0;
+  u8g2.clearBuffer(); drawBorder();
+  u8g2.drawStr(2,0, "Scan WiFi");
+  u8g2.drawStr(2,16, "Dur:"); u8g2.setCursor(40,16); u8g2.print(scanDuration); u8g2.print("s");
+  drawProgressBar(2,26,124,0); u8g2.sendBuffer();
   
+  wifiCount=0; totalAPs=0; for (int i=0;i<14;i++) channelUsage[i]=0;
+  WiFi.scanNetworks(true);
+  int steps = scanDuration*2;
+  for (int i=0; i<steps; i++) {
+    u8g2.clearBuffer(); drawBorder();
+    u8g2.drawStr(2,0, "Scan WiFi");
+    drawProgressBar(2,26,124, (i*100)/steps);
+    u8g2.setCursor(2,36); u8g2.print((i*100)/steps); u8g2.print("%");
+    u8g2.sendBuffer();
+    delay(500);
+  }
   int n = WiFi.scanComplete();
-  if (n == -2 || n == -1) {
-    WiFi.scanNetworks(true);
-    delay(scanDuration * 1000);
-    n = WiFi.scanComplete();
-  }
-
-  if (n > 0) {
+  if (n>0) {
     wifiCount = min(n, MAX_RESULTS);
-    for (int i = 0; i < wifiCount; i++) {
-      String ssid = WiFi.SSID(i);
-      if (ssid.length() == 0) {
-        strcpy_P(buffer, strHidden);
-        ssid = String(buffer);
-      }
-      int rssi = WiFi.RSSI(i);
-      int ch = WiFi.channel(i);
-      
-      // Apply filter
-      if (filterStrongOnly && rssi < -60) {
-        wifiCount--;
-        continue;
-      }
-      
-      snprintf(wifiResults[i], RESULT_LEN, "%-14s %3ddBm", ssid.c_str(), rssi);
-      wifiRSSI[i] = rssi;
-      wifiChannel[i] = ch;
-      wifiBSSID[i] = WiFi.BSSIDstr(i);
-      
-      // Update channel stats
-      if (ch >= 1 && ch <= 14) {
-        channelUsage[ch]++;
-        totalAPs++;
-      }
+    int valid=0;
+    for (int i=0; i<n && valid<MAX_RESULTS; i++) {
+      String ssid = WiFi.SSID(i); int rssi = WiFi.RSSI(i); int ch = WiFi.channel(i);
+      if (filterStrongOnly && rssi < -60) continue;
+      if (ssid.length()==0) ssid = "?";
+      char line[RESULT_LEN];
+      snprintf(line, sizeof(line), "%-10s %3d", ssid.c_str(), rssi);
+      strcpy(wifiResults[valid], line);
+      wifiRSSI[valid]=rssi; wifiChannel[valid]=ch; wifiBSSID[valid]=WiFi.BSSIDstr(i);
+      if (ch>=1 && ch<=14) { channelUsage[ch]++; totalAPs++; }
+      valid++;
     }
-  } else {
-    wifiCount = 1;
-    strcpy_P(wifiResults[0], strNoAP);
-  }
+    wifiCount = valid;
+  } else { wifiCount=1; strcpy(wifiResults[0], "None"); }
   WiFi.scanDelete();
 }
 
 void scanBLE() {
-  u8g2.clearBuffer();
-  strcpy_P(buffer, strScanBLE);
-  u8g2.drawStr(0, 0, buffer);
-  u8g2.drawStr(0, 14, "Duration: ");
-  u8g2.print(scanDuration);
-  u8g2.print("s");
-  u8g2.sendBuffer();
-
-  bleCount = 0;
+  u8g2.clearBuffer(); drawBorder();
+  u8g2.drawStr(2,0, "Scan BLE");
+  u8g2.drawStr(2,16, "Dur:"); u8g2.setCursor(40,16); u8g2.print(scanDuration); u8g2.print("s");
+  drawProgressBar(2,26,124,0); u8g2.sendBuffer();
+  
+  bleCount=0;
   BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setActiveScan(true);
-  pBLEScan->setInterval(100);
-  pBLEScan->setWindow(99);
-  
-  BLEScanResults* foundDevices = pBLEScan->start(scanDuration, false);
-  int count = foundDevices->getCount();
+  pBLEScan->setActiveScan(true); pBLEScan->setInterval(100); pBLEScan->setWindow(99);
+  int steps = scanDuration*2;
+  for (int i=0; i<steps; i++) {
+    u8g2.clearBuffer(); drawBorder();
+    u8g2.drawStr(2,0, "Scan BLE");
+    drawProgressBar(2,26,124, (i*100)/steps);
+    u8g2.setCursor(2,36); u8g2.print((i*100)/steps); u8g2.print("%");
+    u8g2.sendBuffer();
+    delay(500);
+  }
+  BLEScanResults* found = pBLEScan->start(scanDuration, false);
+  int count = found->getCount();
   bleCount = min(count, MAX_RESULTS);
-  
-  for (int i = 0; i < bleCount; i++) {
-    BLEAdvertisedDevice device = foundDevices->getDevice(i);
-    String name = device.getName().c_str();
-    if (name.length() == 0) {
-      strcpy_P(buffer, strUnknown);
-      name = String(buffer);
-    }
-    int rssi = device.getRSSI();
-    
-    snprintf(bleResults[i], RESULT_LEN, "%-12s %3ddBm", name.c_str(), rssi);
-    bleRSSI[i] = rssi;
-    bleAddress[i] = device.getAddress().toString().c_str();
+  for (int i=0; i<bleCount; i++) {
+    BLEAdvertisedDevice dev = found->getDevice(i);
+    String name = dev.getName().c_str();
+    if (name.length()==0) name = "?";
+    int rssi = dev.getRSSI();
+    char line[RESULT_LEN];
+    snprintf(line, sizeof(line), "%-10s %3d", name.c_str(), rssi);
+    strcpy(bleResults[i], line);
+    bleRSSI[i]=rssi; bleAddress[i]=dev.getAddress().toString().c_str();
   }
   pBLEScan->clearResults();
 }
 
 void scanNRF24() {
-  u8g2.clearBuffer();
-  strcpy_P(buffer, strScanNRF);
-  u8g2.drawStr(0, 0, buffer);
-  u8g2.sendBuffer();
-
-  nrfCount = 0;
-  radio.stopListening();
-  radio.setPALevel(RF24_PA_LOW);
-  radio.setDataRate(RF24_250KBPS);
-  radio.setPayloadSize(32);
-
-  for (int ch = 0; ch <= 125 && nrfCount < MAX_RESULTS; ch++) {
-    radio.setChannel(ch);
-    radio.startListening();
-    delayMicroseconds(500);
-    
-    unsigned long start = millis();
-    bool detected = false;
-    while (millis() - start < 5) {
-      if (radio.available()) {
-        detected = true;
-        uint8_t dummy[32];
-        radio.read(&dummy, 1);
-        break;
-      }
+  u8g2.clearBuffer(); drawBorder();
+  u8g2.drawStr(2,0, "Scan NRF");
+  drawProgressBar(2,26,124,0); u8g2.sendBuffer();
+  
+  nrfCount=0; radio.stopListening(); radio.setPALevel(RF24_PA_LOW); radio.setDataRate(RF24_250KBPS); radio.setPayloadSize(32);
+  int total = 126;
+  for (int ch=0; ch<total && nrfCount<MAX_RESULTS; ch++) {
+    if (ch%10==0) {
+      u8g2.clearBuffer(); drawBorder();
+      u8g2.drawStr(2,0, "Scan NRF");
+      drawProgressBar(2,26,124, (ch*100)/total);
+      u8g2.setCursor(2,36); u8g2.print((ch*100)/total); u8g2.print("%");
+      u8g2.sendBuffer();
     }
-    radio.stopListening();
-    
-    if (detected) {
-      snprintf(nrfResults[nrfCount], RESULT_LEN, "Ch %3d active", ch);
-      nrfCount++;
-    }
-    delay(1);
+    radio.setChannel(ch); radio.startListening(); delayMicroseconds(300);
+    if (radio.available()) { uint8_t dummy[32]; radio.read(&dummy,1); char line[RESULT_LEN]; snprintf(line, sizeof(line), "CH%3d", ch); strcpy(nrfResults[nrfCount], line); nrfCount++; }
+    radio.stopListening(); delay(1);
   }
-
-  if (nrfCount == 0) {
-    strcpy_P(nrfResults[0], strNoActivity);
-    nrfCount = 1;
-  }
+  if (nrfCount==0) { strcpy(nrfResults[0], "None"); nrfCount=1; }
 }
 
 void analyzeChannels() {
-  if (wifiCount == 0) {
-    WiFi.scanNetworks(true);
-    delay(2000);
-    int n = WiFi.scanComplete();
-    if (n > 0) {
-      for (int i = 0; i < n; i++) {
-        int ch = WiFi.channel(i);
-        if (ch >= 1 && ch <= 14) channelUsage[ch]++;
-      }
-      totalAPs = n;
-    }
+  if (wifiCount==0) {
+    WiFi.scanNetworks(true); delay(2000); int n = WiFi.scanComplete();
+    if (n>0) { for (int i=0;i<n;i++) { int ch=WiFi.channel(i); if (ch>=1&&ch<=14) channelUsage[ch]++; } totalAPs=n; }
     WiFi.scanDelete();
   }
-}
-
-void showAbout() {
-  u8g2.clearBuffer();
-  strcpy_P(buffer, strAbout1); u8g2.drawStr(0, 0, buffer);
-  strcpy_P(buffer, strAbout2); u8g2.drawStr(0, 14, buffer);
-  strcpy_P(buffer, strAbout3); u8g2.drawStr(0, 28, buffer);
-  strcpy_P(buffer, strAbout4); u8g2.drawStr(0, 42, buffer);
-  strcpy_P(buffer, strAbout5); u8g2.drawStr(0, 56, buffer);
-  u8g2.sendBuffer();
-  
-  while (digitalRead(BUTTON_BACK) == HIGH) delay(10);
-  delay(50);
 }
